@@ -38,7 +38,7 @@ class ProcessRequest(BaseModel):
 def run_cmd(cmd: list[str]):
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if res.returncode != 0:
-        print("FFMPEG FULL STDERR:\n", res.stderr, flush=True)
+        print(f"FFMPEG FAILED (code {res.returncode}):\n", res.stderr[-1500:], flush=True)
         raise RuntimeError(f"FFmpeg error (code {res.returncode})")
     return res
 
@@ -140,7 +140,7 @@ def fetch_broll_clip(query: str, formato: str, dest_path: str) -> bool:
             break
 
     videos = chosen.get("videos", {})
-    video_url = (videos.get("medium") or videos.get("small") or {}).get("url")
+    video_url = (videos.get("small") or videos.get("medium") or {}).get("url")
     if not video_url:
         return False
 
@@ -186,33 +186,33 @@ def process_video_job(codigo: str):
                 f.write(file_bytes)
             print(f"[{codigo}] 4. Video descargado ({len(file_bytes)} bytes)", flush=True)
 
-            # 2. Reencuadre + corte de silencios (con fallback seguro)
+            # 2. Reencuadre + corte de silencios (con -threads 2 para evitar OOM en Railway)
             scale_crop = (
                 f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
                 f"crop={target_w}:{target_h},fps=30,format=yuv420p"
             )
             try:
                 run_cmd([
-                    "ffmpeg", "-y", "-i", raw_path,
+                    "ffmpeg", "-y", "-threads", "2", "-i", raw_path,
                     "-vf", scale_crop,
                     "-af", "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-40dB:stop_periods=-1:stop_duration=0.5:stop_threshold=-40dB",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
                     "-c:a", "aac", "-b:a", "128k",
                     cut_path
                 ])
             except Exception:
                 print(f"[{codigo}] Fallback sin silenceremove...", flush=True)
                 run_cmd([
-                    "ffmpeg", "-y", "-i", raw_path,
+                    "ffmpeg", "-y", "-threads", "2", "-i", raw_path,
                     "-vf", scale_crop,
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
                     "-c:a", "aac", "-b:a", "128k",
                     cut_path
                 ])
             print(f"[{codigo}] 5. Corte y reencuadre listo", flush=True)
 
             # 3. Transcripción palabra por palabra con Groq Whisper
-            run_cmd(["ffmpeg", "-y", "-i", cut_path, "-vn", "-acodec", "libmp3lame", "-q:a", "4", audio_path])
+            run_cmd(["ffmpeg", "-y", "-threads", "2", "-i", cut_path, "-vn", "-acodec", "libmp3lame", "-q:a", "4", audio_path])
 
             with open(audio_path, "rb") as af:
                 transcription = groq_client.audio.transcriptions.create(
@@ -256,16 +256,16 @@ def process_video_job(codigo: str):
 
                 if fetch_broll_clip(query, formato, clip_raw):
                     run_cmd([
-                        "ffmpeg", "-y", "-i", clip_raw, "-t", "2.5",
+                        "ffmpeg", "-y", "-threads", "2", "-i", clip_raw, "-t", "2.5",
                         "-vf", f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},fps=30,format=yuv420p",
-                        "-an", "-c:v", "libx264", "-preset", "veryfast",
+                        "-an", "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2",
                         clip_ready
                     ])
                     run_cmd([
-                        "ffmpeg", "-y", "-i", current_video, "-itsoffset", str(start_s), "-i", clip_ready,
+                        "ffmpeg", "-y", "-threads", "2", "-i", current_video, "-itsoffset", str(start_s), "-i", clip_ready,
                         "-filter_complex", f"[0:v][1:v]overlay=0:0:enable='between(t,{start_s},{start_s + 2.5})'[v]",
                         "-map", "[v]", "-map", "0:a",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "copy",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2", "-c:a", "copy",
                         out_step
                     ])
                     current_video = out_step
@@ -276,9 +276,9 @@ def process_video_job(codigo: str):
                 build_ass_subtitles(words, estilo, formato, ass_path)
                 escaped_ass = ass_path.replace("\\", "/").replace(":", "\\:")
                 run_cmd([
-                    "ffmpeg", "-y", "-i", current_video,
+                    "ffmpeg", "-y", "-threads", "2", "-i", current_video,
                     "-vf", f"ass='{escaped_ass}'",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "21",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-threads", "2",
                     "-c:a", "copy",
                     final_path
                 ])
