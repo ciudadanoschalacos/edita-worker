@@ -72,24 +72,24 @@ def build_ass_graphics_and_subtitles(
         font_size = 78 if formato == "9:16" else 64
         primary_color = "&H00FFFFFF"
         highlight_color = "&H0000D7FF"  # Amarillo dorado
-        card_accent = "&H0000D7FF"
-        card_bg = "&H30101018"
+        card_text_color = "&H00000000"  # Texto negro para máximo contraste
+        card_box_color = "&H0000D7FF"   # Caja amarillo dorado
         outline_w = 5
         margin_v = 340 if formato == "9:16" else 120
     elif estilo == "limpio":
         font_size = 60 if formato == "9:16" else 50
         primary_color = "&H00F8FAFC"
         highlight_color = "&H0081B910"  # Verde esmeralda
-        card_accent = "&H0081B910"
-        card_bg = "&H250F172A"
+        card_text_color = "&H00FFFFFF"  # Texto blanco
+        card_box_color = "&H200F172A"   # Caja azul oscuro casi opaca
         outline_w = 3
         margin_v = 280 if formato == "9:16" else 100
     else:  # storytelling
         font_size = 56 if formato == "9:16" else 46
         primary_color = "&H00F1F5F9"
         highlight_color = "&H007DD3FC"  # Azul/crema cálido
-        card_accent = "&H0060A5FA"
-        card_bg = "&H3518181B"
+        card_text_color = "&H00FFFFFF"
+        card_box_color = "&H2518181B"   # Caja carbón elegante
         outline_w = 3
         margin_v = 220 if formato == "9:16" else 90
 
@@ -104,22 +104,31 @@ PlayResY: {play_res_y}
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Montserrat,{font_size},{primary_color},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline_w},2,2,60,60,{margin_v},1
-Style: CardBox,Montserrat,{card_title_size},&H00FFFFFF,&H000000FF,{card_accent},{card_bg},-1,0,0,0,100,100,1,0,3,14,0,8,70,70,220,1
-Style: CardSub,Montserrat,{card_sub_size},&H00CBD5E1,&H000000FF,&H00000000,{card_bg},0,0,0,0,100,100,0,0,1,2,0,8,70,70,305,1
+Style: CardBox,Montserrat,{card_title_size},{card_text_color},&H000000FF,{card_box_color},{card_box_color},-1,0,0,0,100,100,1,0,3,16,0,8,70,70,220,1
+Style: CardSub,Montserrat,{card_sub_size},&H00F8FAFC,&H000000FF,&H30090D16,&H30090D16,-1,0,0,0,100,100,0,0,3,10,0,8,70,70,315,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events = []
 
-    # Capa 1: Tarjetas gráficas animadas tipo Remotion (Motion Graphics)
+    # Capa 1: Tarjetas gráficas animadas (sin solapamiento y con alto contraste)
     top_y_title = 230 if formato == "9:16" else 95
-    top_y_sub = 305 if formato == "9:16" else 155
+    top_y_sub = 315 if formato == "9:16" else 160
     center_x = play_res_x // 2
+    max_video_t = max((w["end"] for w in words), default=30.0)
 
-    for card in cards:
-        c_start = float(card.get("start", 1.0))
-        c_end = c_start + 3.2
+    sorted_cards = sorted(cards, key=lambda c: float(c.get("start", 1.0)))
+    last_card_end = 0.0
+
+    for card in sorted_cards:
+        raw_start = float(card.get("start", 1.0))
+        c_start = max(raw_start, last_card_end + 0.5)
+        if c_start >= max_video_t - 0.8:
+            break
+        c_end = min(c_start + 2.6, max_video_t)
+        last_card_end = c_end
+
         title_txt = escape_ass_text(str(card.get("title", "")))
         sub_txt = escape_ass_text(str(card.get("subtitle", "")))
         if not title_txt:
@@ -127,16 +136,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         if estilo == "viral":
             title_txt = title_txt.upper()
-            # Animación pop-in con rebote suave + fade out
             anim_tag = (
-                f"{{\\pos({center_x},{top_y_title})\\fad(180,220)"
-                f"\\fscx75\\fscy75\\t(0,180,\\fscx105\\fscy105)\\t(180,280,\\fscx100\\fscy100)}}"
+                f"{{\\pos({center_x},{top_y_title})\\fad(160,200)"
+                f"\\fscx80\\fscy80\\t(0,160,\\fscx104\\fscy104)\\t(160,250,\\fscx100\\fscy100)}}"
             )
         else:
-            # Animación slide-down elegante + fade in/out (estilo Remotion limpio)
             anim_tag = (
-                f"{{\\move({center_x},{top_y_title - 35},{center_x},{top_y_title},0,260)"
-                f"\\fad(220,250)}}"
+                f"{{\\move({center_x},{top_y_title - 30},{center_x},{top_y_title},0,240)"
+                f"\\fad(200,220)}}"
             )
 
         events.append(
@@ -145,8 +152,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         if sub_txt:
             sub_anim = (
-                f"{{\\move({center_x},{top_y_sub - 25},{center_x},{top_y_sub},60,300)"
-                f"\\fad(250,250)}}"
+                f"{{\\move({center_x},{top_y_sub - 20},{center_x},{top_y_sub},50,280)"
+                f"\\fad(220,220)}}"
             )
             events.append(
                 f"Dialogue: 1,{format_ass_time(c_start)},{format_ass_time(c_end)},CardSub,,0,0,0,,{sub_anim}{sub_txt}"
@@ -229,7 +236,6 @@ def build_video_filter(estilo: str, target_w: int, target_h: int) -> str:
         f"crop={target_w}:{target_h},fps=30"
     )
     if estilo == "viral":
-        # Punch-in zoom dinámico (112%) cada 3.5 segundos alternando planos
         zoom_expr = "if(lt(mod(t,7),3.5),1.0,1.12)"
         return (
             f"{base_scale},"
@@ -238,7 +244,6 @@ def build_video_filter(estilo: str, target_w: int, target_h: int) -> str:
             f"eq=contrast=1.05:saturation=1.12,format=yuv420p"
         )
     elif estilo == "limpio":
-        # Zoom continuo suave (100% -> 105% en ciclo de 8s) estilo educativo moderno
         zoom_expr = "1.0+0.05*(0.5-0.5*cos(2*PI*t/8))"
         return (
             f"{base_scale},"
@@ -247,7 +252,6 @@ def build_video_filter(estilo: str, target_w: int, target_h: int) -> str:
             f"eq=contrast=1.03:brightness=0.01,format=yuv420p"
         )
     else:  # storytelling
-        # Movimiento respiratorio muy sutil + tono cálido cinematográfico
         zoom_expr = "1.0+0.03*(0.5-0.5*cos(2*PI*t/10))"
         return (
             f"{base_scale},"
@@ -340,8 +344,8 @@ def process_video_job(codigo: str):
                     f"y devuelve un JSON con exactamente dos listas:\n"
                     f"1. 'clips': máximo 3 momentos donde insertar un video de apoyo (B-roll) de 2.2 segundos. "
                     f"Cada objeto: {{'start': float, 'query': '2 palabras en inglés para Pixabay'}}.\n"
-                    f"2. 'cards': máximo 3 tarjetas gráficas informativas (motion graphics) en momentos clave donde NO haya B-roll. "
-                    f"Cada objeto: {{'start': float, 'title': 'título corto de max 4 palabras', 'subtitle': 'subtítulo opcional de max 6 palabras'}}.\n"
+                    f"2. 'cards': máximo 3 tarjetas gráficas informativas (motion graphics) separadas por al menos 3.5 segundos entre sí. "
+                    f"Cada objeto: {{'start': float, 'title': 'título corto de max 3 palabras', 'subtitle': 'subtítulo opcional de max 5 palabras'}}.\n"
                     f"Transcripción: {full_text}"
                 )
                 chat = openai_client.chat.completions.create(
