@@ -1,0 +1,28 @@
+name: Render Remotion Pro Video
+
+on:
+  repository_dispatch:
+    types: [render-remotion]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias de Remotion
+        working-directory: ./remotion
+        run: npm install
+
+      - name: Renderizar y subir video a Supabase
+        working-directory: ./remotion
+        env:
+          CODIGO: ${{ github.event.client_payload.codigo }}
+          PROPS_JSON: ${{ github.event.client_payload.props_json }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: node render.mjs
