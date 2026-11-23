@@ -1,0 +1,18 @@
+{
+  "name": "edita-remotion-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@remotion/cli": "^4.0.240",
+    "@remotion/bundler": "^4.0.240",
+    "@remotion/renderer": "^4.0.240",
+    "@supabase/supabase-js": "^2.45.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.240"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "typescript": "^5.5.4"
+  }
+}
