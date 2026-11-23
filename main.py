@@ -171,9 +171,16 @@ def process_video_job(codigo: str):
             ass_path = os.path.join(tmp, "subs.ass")
             final_path = os.path.join(tmp, "final.mp4")
 
-            # 1. Descargar video crudo
-            print(f"[{codigo}] 3. Descargando video crudo...", flush=True)
-            file_bytes = supabase.storage.from_("videos-crudos").download(ruta_orig)
+           # 1. Descargar video crudo (con respaldo si ruta_orig dice 'pendiente')
+            print(f"[{codigo}] 3. Descargando video crudo ({ruta_orig})...", flush=True)
+            actual_path = ruta_orig
+            if not actual_path or actual_path == "pendiente":
+                files_in_folder = supabase.storage.from_("videos-crudos").list(codigo)
+                if files_in_folder:
+                    actual_path = f"{codigo}/{files_in_folder[0]['name']}"
+                    print(f"[{codigo}] Ruta real encontrada en bucket: {actual_path}", flush=True)
+
+            file_bytes = supabase.storage.from_("videos-crudos").download(actual_path)
             with open(raw_path, "wb") as f:
                 f.write(file_bytes)
             print(f"[{codigo}] 4. Video descargado ({len(file_bytes)} bytes)", flush=True)
