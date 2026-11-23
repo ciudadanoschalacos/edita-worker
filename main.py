@@ -2,6 +2,7 @@ import os
 import json
 import subprocess
 import tempfile
+import traceback
 import requests
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -149,16 +150,19 @@ def fetch_broll_clip(query: str, formato: str, dest_path: str) -> bool:
 
 
 def process_video_job(codigo: str):
+    print(f"[{codigo}] 1. Iniciando job...", flush=True)
     try:
         res = supabase.table("pedidos").select("*").eq("codigo", codigo).single().execute()
         pedido = res.data
         if not pedido:
+            print(f"[{codigo}] Pedido no encontrado en Supabase", flush=True)
             return
 
         estilo = pedido["estilo"]
         formato = pedido["formato"]
         ruta_orig = pedido["ruta_video_original"]
         target_w, target_h = (1080, 1920) if formato == "9:16" else (1920, 1080)
+        print(f"[{codigo}] 2. Pedido leído: estilo={estilo}, formato={formato}, ruta={ruta_orig}", flush=True)
 
         with tempfile.TemporaryDirectory() as tmp:
             raw_path = os.path.join(tmp, "raw.mp4")
@@ -168,9 +172,11 @@ def process_video_job(codigo: str):
             final_path = os.path.join(tmp, "final.mp4")
 
             # 1. Descargar video crudo
+            print(f"[{codigo}] 3. Descargando video crudo...", flush=True)
             file_bytes = supabase.storage.from_("videos-crudos").download(ruta_orig)
             with open(raw_path, "wb") as f:
                 f.write(file_bytes)
+            print(f"[{codigo}] 4. Video descargado ({len(file_bytes)} bytes)", flush=True)
 
             # 2. Reencuadre + corte de silencios
             scale_crop = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},fps=30"
@@ -182,6 +188,7 @@ def process_video_job(codigo: str):
                 "-c:a", "aac", "-b:a", "128k",
                 cut_path
             ])
+            print(f"[{codigo}] 5. Corte y reencuadre listo", flush=True)
 
             # 3. Transcripción palabra por palabra con Groq Whisper
             run_cmd(["ffmpeg", "-y", "-i", cut_path, "-vn", "-acodec", "libmp3lame", "-q:a", "4", audio_path])
@@ -197,6 +204,7 @@ def process_video_job(codigo: str):
 
             words = getattr(transcription, "words", []) or []
             full_text = getattr(transcription, "text", "")
+            print(f"[{codigo}] 6. Transcripción lista ({len(words)} palabras): {full_text[:60]}...", flush=True)
 
             # 4. Guion B-Roll con GPT-4o-mini
             broll_plan = []
@@ -214,6 +222,7 @@ def process_video_job(codigo: str):
                 )
                 parsed = json.loads(chat.choices[0].message.content)
                 broll_plan = parsed.get("clips", [])[:3]
+            print(f"[{codigo}] 7. Plan B-Roll ({len(broll_plan)} clips): {broll_plan}", flush=True)
 
             # 5. Superponer clips B-Roll de Pixabay
             current_video = cut_path
@@ -239,6 +248,7 @@ def process_video_job(codigo: str):
                         out_step
                     ])
                     current_video = out_step
+            print(f"[{codigo}] 8. B-Roll integrado", flush=True)
 
             # 6. Quemar subtítulos dinámicos
             if words:
@@ -253,6 +263,7 @@ def process_video_job(codigo: str):
                 ])
             else:
                 final_path = current_video
+            print(f"[{codigo}] 9. Subtítulos quemados", flush=True)
 
             # 7. Subir resultado final y actualizar pedido
             dest_storage_path = f"{codigo}/editado.mp4"
@@ -264,14 +275,17 @@ def process_video_job(codigo: str):
                 )
 
             public_url = supabase.storage.from_("videos-editados").get_public_url(dest_storage_path)
+            print(f"[{codigo}] 10. Subido a Storage: {public_url}", flush=True)
 
             supabase.table("pedidos").update({
                 "estado": "completado",
                 "url_video_final": public_url,
             }).eq("codigo", codigo).execute()
+            print(f"[{codigo}] 11. ¡COMPLETADO!", flush=True)
 
     except Exception as e:
-        print(f"Error procesando {codigo}: {e}")
+        print(f"[{codigo}] ERROR FATAL: {e}", flush=True)
+        traceback.print_exc()
 
 
 @app.get("/health")
