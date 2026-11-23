@@ -337,17 +337,24 @@ def process_video_job(codigo: str):
             full_text = getattr(transcription, "text", "")
             print(f"[{codigo}] 6. Transcripción lista ({len(words)} palabras): {full_text[:60]}...", flush=True)
 
-            # 4. Guion de B-Roll + Tarjetas Gráficas con GPT-4o-mini
+          # 4. Guion de B-Roll + Escenas Motion Graphics con GPT-4o-mini (100% en español)
             broll_plan = []
             cards_plan = []
             if len(full_text.strip()) > 15:
                 prompt_llm = (
-                    f"Eres un director de edición de video estilo '{estilo}'. Analiza esta transcripción en español "
-                    f"y devuelve un JSON con exactamente dos listas:\n"
-                    f"1. 'clips': máximo 3 momentos donde insertar un video de apoyo (B-roll) de 2.2 segundos. "
-                    f"Cada objeto: {{'start': float, 'query': '2 palabras en inglés para Pixabay'}}.\n"
-                    f"2. 'cards': máximo 3 tarjetas gráficas informativas separadas por al menos 3.5 segundos entre sí. "
-                    f"Cada objeto: {{'start': float, 'title': 'título corto de max 3 palabras', 'subtitle': 'subtítulo opcional de max 5 palabras'}}.\n"
+                    f"Eres un director de motion graphics en español para videos estilo '{estilo}'. "
+                    f"Analiza esta transcripción en español y devuelve un JSON con exactamente dos listas:\n"
+                    f"1. 'clips': máximo 2 momentos clave para mostrar un video de apoyo (B-roll) en ventana flotante. "
+                    f"Cada objeto: {{'start': float, 'query': '2 palabras en inglés para buscar en Pixabay'}}.\n"
+                    f"2. 'cards': máximo 3 escenas gráficas en ESPAÑOL puro (nunca uses palabras en inglés como Insight o Tips), "
+                    f"separadas por al menos 4.0 segundos entre sí. Cada objeto debe tener:\n"
+                    f"   - 'start': float\n"
+                    f"   - 'type': elige entre 'stat' (si hay un número, porcentaje o tiempo como '5 AÑOS'), 'list' (si enumera 2 o 3 puntos) o 'card' (idea clave)\n"
+                    f"   - 'badge': etiqueta corta en español de 1 o 2 palabras (ej. 'CLAVE', 'DATO', 'PASO 1')\n"
+                    f"   - 'title': título corto en español de máximo 3 palabras\n"
+                    f"   - 'subtitle': subtítulo breve en español de máximo 5 palabras\n"
+                    f"   - 'statValue': solo si type es 'stat', el número o cifra corta (ej. '5 AÑOS', '100%')\n"
+                    f"   - 'items': solo si type es 'list', lista de 2 o 3 frases muy cortas en español (máx 3 palabras cada una)\n"
                     f"Transcripción: {full_text}"
                 )
                 chat = openai_client.chat.completions.create(
@@ -356,9 +363,9 @@ def process_video_job(codigo: str):
                     messages=[{"role": "user", "content": prompt_llm}],
                 )
                 parsed = json.loads(chat.choices[0].message.content)
-                broll_plan = parsed.get("clips", [])[:3]
+                broll_plan = parsed.get("clips", [])[:2]
                 cards_plan = parsed.get("cards", [])[:3]
-            print(f"[{codigo}] 7. Plan B-Roll ({len(broll_plan)}) y Cards ({len(cards_plan)}) listos", flush=True)
+            print(f"[{codigo}] 7. Plan B-Roll ({len(broll_plan)}) y Escenas ({len(cards_plan)}) listos", flush=True)
 
             # Si el cliente eligió Remotion Pro, delegar renderizado a GitHub Actions
             if estilo == "remotion":
@@ -372,8 +379,33 @@ def process_video_job(codigo: str):
                     )
                 base_public_url = supabase.storage.from_("videos-editados").get_public_url(base_storage_path)
 
+                max_sec = max((w["end"] for w in words), default=15.0)
+
+                # Ordenar tarjetas sin solapamientos
+                clean_cards = []
+                last_end = 0.0
+                for c in sorted(cards_plan, key=lambda x: float(x.get("start", 1.0))):
+                    c_start = max(float(c.get("start", 1.0)), last_end + 0.6)
+                    if c_start >= max_sec - 1.0:
+                        break
+                    last_end = c_start + 3.2
+                    clean_cards.append({
+                        "start": c_start,
+                        "type": c.get("type", "card"),
+                        "badge": c.get("badge", "IDEA CLAVE"),
+                        "title": c.get("title", ""),
+                        "subtitle": c.get("subtitle", ""),
+                        "statValue": c.get("statValue", ""),
+                        "items": c.get("items", []),
+                    })
+
+                # Colocar B-rolls solo en huecos donde no haya tarjetas activas
                 brolls_for_remotion = []
                 for item in broll_plan:
+                    b_start = float(item.get("start", 0))
+                    overlaps = any(abs(b_start - cc["start"]) < 3.4 for cc in clean_cards)
+                    if overlaps or b_start >= max_sec - 2.6:
+                        continue
                     r_pix = requests.get(
                         "https://pixabay.com/api/videos/",
                         params={"key": PIXABAY_API_KEY, "q": item.get("query", "business"), "per_page": 3},
@@ -383,23 +415,14 @@ def process_video_job(codigo: str):
                     if hits:
                         v_url = (hits[0].get("videos", {}).get("small") or {}).get("url")
                         if v_url:
-                            brolls_for_remotion.append({"start": float(item.get("start", 0)), "url": v_url})
+                            brolls_for_remotion.append({"start": b_start, "url": v_url})
 
-                max_sec = max((w["end"] for w in words), default=15.0)
                 props_payload = {
                     "videoUrl": base_public_url,
                     "formato": formato,
                     "durationInFrames": int(round((max_sec + 0.5) * 30)),
                     "words": words,
-                    "cards": [
-                        {
-                            "start": float(c.get("start", 1.0)),
-                            "title": c.get("title", ""),
-                            "subtitle": c.get("subtitle", ""),
-                            "badge": "INSIGHT",
-                        }
-                        for c in cards_plan
-                    ],
+                    "cards": clean_cards,
                     "brolls": brolls_for_remotion,
                 }
 
