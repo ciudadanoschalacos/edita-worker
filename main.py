@@ -38,7 +38,8 @@ class ProcessRequest(BaseModel):
 def run_cmd(cmd: list[str]):
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if res.returncode != 0:
-        raise RuntimeError(f"FFmpeg error: {res.stderr[-500:]}")
+        print("FFMPEG FULL STDERR:\n", res.stderr, flush=True)
+        raise RuntimeError(f"FFmpeg error (code {res.returncode})")
     return res
 
 
@@ -171,7 +172,7 @@ def process_video_job(codigo: str):
             ass_path = os.path.join(tmp, "subs.ass")
             final_path = os.path.join(tmp, "final.mp4")
 
-           # 1. Descargar video crudo (con respaldo si ruta_orig dice 'pendiente')
+            # 1. Descargar video crudo
             print(f"[{codigo}] 3. Descargando video crudo ({ruta_orig})...", flush=True)
             actual_path = ruta_orig
             if not actual_path or actual_path == "pendiente":
@@ -185,16 +186,29 @@ def process_video_job(codigo: str):
                 f.write(file_bytes)
             print(f"[{codigo}] 4. Video descargado ({len(file_bytes)} bytes)", flush=True)
 
-            # 2. Reencuadre + corte de silencios
-            scale_crop = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},fps=30"
-            run_cmd([
-                "ffmpeg", "-y", "-i", raw_path,
-                "-vf", scale_crop,
-                "-af", "silenceremove=stop_periods=-1:stop_duration=0.45:stop_threshold=-38dB",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "128k",
-                cut_path
-            ])
+            # 2. Reencuadre + corte de silencios (con fallback seguro)
+            scale_crop = (
+                f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+                f"crop={target_w}:{target_h},fps=30,format=yuv420p"
+            )
+            try:
+                run_cmd([
+                    "ffmpeg", "-y", "-i", raw_path,
+                    "-vf", scale_crop,
+                    "-af", "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-40dB:stop_periods=-1:stop_duration=0.5:stop_threshold=-40dB",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                    "-c:a", "aac", "-b:a", "128k",
+                    cut_path
+                ])
+            except Exception:
+                print(f"[{codigo}] Fallback sin silenceremove...", flush=True)
+                run_cmd([
+                    "ffmpeg", "-y", "-i", raw_path,
+                    "-vf", scale_crop,
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                    "-c:a", "aac", "-b:a", "128k",
+                    cut_path
+                ])
             print(f"[{codigo}] 5. Corte y reencuadre listo", flush=True)
 
             # 3. Transcripción palabra por palabra con Groq Whisper
@@ -243,7 +257,7 @@ def process_video_job(codigo: str):
                 if fetch_broll_clip(query, formato, clip_raw):
                     run_cmd([
                         "ffmpeg", "-y", "-i", clip_raw, "-t", "2.5",
-                        "-vf", f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},fps=30",
+                        "-vf", f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},fps=30,format=yuv420p",
                         "-an", "-c:v", "libx264", "-preset", "veryfast",
                         clip_ready
                     ])
