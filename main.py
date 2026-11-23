@@ -112,7 +112,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events = []
 
-    # Capa 1: Tarjetas gráficas animadas (sin solapamiento y con alto contraste)
     top_y_title = 230 if formato == "9:16" else 95
     top_y_sub = 315 if formato == "9:16" else 160
     center_x = play_res_x // 2
@@ -159,7 +158,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 f"Dialogue: 1,{format_ass_time(c_start)},{format_ass_time(c_end)},CardSub,,0,0,0,,{sub_anim}{sub_txt}"
             )
 
-    # Capa 0: Subtítulos dinámicos palabra por palabra
     chunk_size = 3
     for i in range(0, len(words), chunk_size):
         chunk = words[i : i + chunk_size]
@@ -251,7 +249,7 @@ def build_video_filter(estilo: str, target_w: int, target_h: int) -> str:
             f"crop={target_w}:{target_h}:(iw-{target_w})/2:(ih-{target_h})/2,"
             f"eq=contrast=1.03:brightness=0.01,format=yuv420p"
         )
-    else:  # storytelling
+    else:  # storytelling o base para remotion
         zoom_expr = "1.0+0.03*(0.5-0.5*cos(2*PI*t/10))"
         return (
             f"{base_scale},"
@@ -297,8 +295,12 @@ def process_video_job(codigo: str):
                 f.write(file_bytes)
             print(f"[{codigo}] 4. Video descargado ({len(file_bytes)} bytes)", flush=True)
 
-            # 2. Reencuadre + zooms dinámicos + corte de silencios
-            vf_main = build_video_filter(estilo, target_w, target_h)
+            # 2. Reencuadre + corte de silencios
+            vf_main = (
+                f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},fps=30,format=yuv420p"
+                if estilo == "remotion"
+                else build_video_filter(estilo, target_w, target_h)
+            )
             try:
                 run_cmd([
                     "ffmpeg", "-y", "-threads", "2", "-i", raw_path,
@@ -317,7 +319,7 @@ def process_video_job(codigo: str):
                     "-c:a", "aac", "-b:a", "128k",
                     cut_path
                 ])
-            print(f"[{codigo}] 5. Corte, zooms y color listo", flush=True)
+            print(f"[{codigo}] 5. Corte listo", flush=True)
 
             # 3. Transcripción palabra por palabra con Groq Whisper
             run_cmd(["ffmpeg", "-y", "-threads", "2", "-i", cut_path, "-vn", "-acodec", "libmp3lame", "-q:a", "4", audio_path])
@@ -335,7 +337,7 @@ def process_video_job(codigo: str):
             full_text = getattr(transcription, "text", "")
             print(f"[{codigo}] 6. Transcripción lista ({len(words)} palabras): {full_text[:60]}...", flush=True)
 
-            # 4. Guion de B-Roll + Tarjetas Gráficas (Motion Graphics) con GPT-4o-mini
+            # 4. Guion de B-Roll + Tarjetas Gráficas con GPT-4o-mini
             broll_plan = []
             cards_plan = []
             if len(full_text.strip()) > 15:
@@ -344,7 +346,7 @@ def process_video_job(codigo: str):
                     f"y devuelve un JSON con exactamente dos listas:\n"
                     f"1. 'clips': máximo 3 momentos donde insertar un video de apoyo (B-roll) de 2.2 segundos. "
                     f"Cada objeto: {{'start': float, 'query': '2 palabras en inglés para Pixabay'}}.\n"
-                    f"2. 'cards': máximo 3 tarjetas gráficas informativas (motion graphics) separadas por al menos 3.5 segundos entre sí. "
+                    f"2. 'cards': máximo 3 tarjetas gráficas informativas separadas por al menos 3.5 segundos entre sí. "
                     f"Cada objeto: {{'start': float, 'title': 'título corto de max 3 palabras', 'subtitle': 'subtítulo opcional de max 5 palabras'}}.\n"
                     f"Transcripción: {full_text}"
                 )
@@ -358,7 +360,70 @@ def process_video_job(codigo: str):
                 cards_plan = parsed.get("cards", [])[:3]
             print(f"[{codigo}] 7. Plan B-Roll ({len(broll_plan)}) y Cards ({len(cards_plan)}) listos", flush=True)
 
-            # 5. Superponer clips B-Roll de Pixabay
+            # Si el cliente eligió Remotion Pro, delegar renderizado a GitHub Actions
+            if estilo == "remotion":
+                print(f"[{codigo}] Derivando a Remotion (GitHub Actions)...", flush=True)
+                base_storage_path = f"{codigo}/base_cut.mp4"
+                with open(cut_path, "rb") as bf:
+                    supabase.storage.from_("videos-editados").upload(
+                        base_storage_path,
+                        bf.read(),
+                        {"content-type": "video/mp4", "upsert": "true"},
+                    )
+                base_public_url = supabase.storage.from_("videos-editados").get_public_url(base_storage_path)
+
+                brolls_for_remotion = []
+                for item in broll_plan:
+                    r_pix = requests.get(
+                        "https://pixabay.com/api/videos/",
+                        params={"key": PIXABAY_API_KEY, "q": item.get("query", "business"), "per_page": 3},
+                        timeout=15,
+                    )
+                    hits = r_pix.json().get("hits", []) if r_pix.status_code == 200 else []
+                    if hits:
+                        v_url = (hits[0].get("videos", {}).get("small") or {}).get("url")
+                        if v_url:
+                            brolls_for_remotion.append({"start": float(item.get("start", 0)), "url": v_url})
+
+                max_sec = max((w["end"] for w in words), default=15.0)
+                props_payload = {
+                    "videoUrl": base_public_url,
+                    "formato": formato,
+                    "durationInFrames": int(round((max_sec + 0.5) * 30)),
+                    "words": words,
+                    "cards": [
+                        {
+                            "start": float(c.get("start", 1.0)),
+                            "title": c.get("title", ""),
+                            "subtitle": c.get("subtitle", ""),
+                            "badge": "INSIGHT",
+                        }
+                        for c in cards_plan
+                    ],
+                    "brolls": brolls_for_remotion,
+                }
+
+                gh_repo = os.environ.get("GITHUB_REPO", "")
+                gh_token = os.environ.get("GITHUB_TOKEN", "")
+                gh_res = requests.post(
+                    f"https://api.github.com/repos/{gh_repo}/dispatches",
+                    headers={
+                        "Authorization": f"Bearer {gh_token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                    json={
+                        "event_type": "render-remotion",
+                        "client_payload": {
+                            "codigo": codigo,
+                            "props_json": json.dumps(props_payload),
+                        },
+                    },
+                    timeout=15,
+                )
+                print(f"[{codigo}] GitHub Actions disparado: status={gh_res.status_code}", flush=True)
+                return
+
+            # 5. Superponer clips B-Roll de Pixabay (planes estándar)
             current_video = cut_path
             for idx, item in enumerate(broll_plan):
                 start_s = float(item.get("start", 0))
