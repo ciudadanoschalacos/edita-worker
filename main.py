@@ -328,6 +328,66 @@ def process_video_job(codigo: str):
             full_text = getattr(transcription, "text", "")
             print(f"[{codigo}] 6. Transcripción lista ({len(words)} palabras): {full_text[:60]}...", flush=True)
 
+# 3.5 Cortar silencios largos (>0.65s) manteniendo audio y video 100% sincronizados
+            if len(words) > 2:
+                speech_segments = []
+                seg_start = max(0.0, float(words[0]["start"]) - 0.15)
+                seg_end = float(words[0]["end"]) + 0.15
+
+                for w in words[1:]:
+                    w_s = float(w["start"])
+                    w_e = float(w["end"])
+                    if w_s - seg_end > 0.65:
+                        speech_segments.append((seg_start, seg_end + 0.1))
+                        seg_start = max(0.0, w_s - 0.12)
+                    seg_end = w_e + 0.15
+                speech_segments.append((seg_start, seg_end + 0.15))
+
+                # Solo recortar si realmente hay pausas largas que eliminar
+                if len(speech_segments) > 1 or speech_segments[0][0] > 0.4:
+                    trimmed_cut = os.path.join(tmp, "cut_nosilence.mp4")
+                    filter_parts = []
+                    concat_inputs = []
+                    for idx_s, (s_t, e_t) in enumerate(speech_segments):
+                        filter_parts.append(
+                            f"[0:v]trim=start={s_t:.3f}:end={e_t:.3f},setpts=PTS-STARTPTS[v{idx_s}];"
+                            f"[0:a]atrim=start={s_t:.3f}:end={e_t:.3f},asetpts=PTS-STARTPTS[a{idx_s}];"
+                        )
+                        concat_inputs.append(f"[v{idx_s}][a{idx_s}]")
+
+                    filter_complex = (
+                        "".join(filter_parts)
+                        + "".join(concat_inputs)
+                        + f"concat=n={len(speech_segments)}:v=1:a=1[outv][outa]"
+                    )
+                    run_cmd([
+                        "ffmpeg", "-y", "-threads", "2", "-i", cut_path,
+                        "-filter_complex", filter_complex,
+                        "-map", "[outv]", "-map", "[outa]",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
+                        "-c:a", "aac", "-b:a", "128k",
+                        trimmed_cut
+                    ])
+                    cut_path = trimmed_cut
+
+                    # Recalcular timestamps de cada palabra tras eliminar los silencios
+                    adjusted_words = []
+                    acc_offset = 0.0
+                    for s_t, e_t in speech_segments:
+                        for w in words:
+                            w_s = float(w["start"])
+                            w_e = float(w["end"])
+                            if w_s >= s_t - 0.05 and w_e <= e_t + 0.05:
+                                adjusted_words.append({
+                                    "word": w["word"],
+                                    "start": round(max(0.0, w_s - s_t + acc_offset), 3),
+                                    "end": round(max(0.0, w_e - s_t + acc_offset), 3),
+                                })
+                        acc_offset += (e_t - s_t)
+                    if adjusted_words:
+                        words = adjusted_words
+                    print(f"[{codigo}] 6.5 Silencios recortados ({len(speech_segments)} tramos sincronizados)", flush=True)
+            
           # 4. Guion de B-Roll + Escenas Motion Graphics con GPT-4o-mini (100% en español)
             broll_plan = []
             cards_plan = []
