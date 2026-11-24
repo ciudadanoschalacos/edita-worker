@@ -404,6 +404,7 @@ def process_video_job(codigo: str):
                     f"2. 'cards': máximo 3 escenas gráficas en ESPAÑOL puro (nunca uses inglés), separadas por al menos 4.5 segundos entre sí. "
                     f"REGLAS ESTRICTAS:\n"
                     f"- 'start': DEBE ser el segundo exacto [Xs] en que el hablante empieza a decir esa frase o dato (nunca antes).\n"
+                    f"- 'end': segundo exacto [Xs] en que termina de hablar sobre ese punto (entre 3.2 y 6.0 segundos después de 'start').\n"
                     f"- 'type': elige 'stat' SOLO si se menciona una cifra o dato exacto, 'list' si enumera 2-3 puntos, o 'card' para una idea clave.\n"
                     f"- 'statValue': si type es 'stat', copia LITERALMENTE la cifra/hora/dato dicho en el audio (ej. si dice '5 de la tarde', pon '5:00 PM' o '5 PM'; si dice '5 años', pon '5 AÑOS'; JAMÁS cambies horas por años ni inventes unidades).\n"
                     f"- 'badge': etiqueta corta en español de 1-2 palabras (ej. 'CLAVE', 'HORARIO', 'DATO').\n"
@@ -435,16 +436,26 @@ def process_video_job(codigo: str):
 
                 max_sec = max((w["end"] for w in words), default=15.0)
 
-                # Ordenar tarjetas sin solapamientos
+              # Ordenar tarjetas sin solapamientos y con duración dinámica
                 clean_cards = []
                 last_end = 0.0
-                for c in sorted(cards_plan, key=lambda x: float(x.get("start", 1.0))):
-                    c_start = max(float(c.get("start", 1.0)), last_end + 0.6)
-                    if c_start >= max_sec - 1.0:
+                sorted_cards = sorted(cards_plan, key=lambda x: float(x.get("start", 1.0)))
+                for idx_c, c in enumerate(sorted_cards):
+                    c_start = max(float(c.get("start", 1.0)), last_end + 0.5)
+                    if c_start >= max_sec - 1.2:
                         break
-                    last_end = c_start + 3.0
+                    raw_end = float(c.get("end", c_start + 4.2))
+                    next_start = (
+                        float(sorted_cards[idx_c + 1].get("start", max_sec)) - 0.5
+                        if idx_c + 1 < len(sorted_cards)
+                        else max_sec - 0.3
+                    )
+                    c_end = min(max(raw_end, c_start + 3.5), c_start + 6.5, next_start)
+                    c_dur = round(max(3.0, c_end - c_start), 2)
+                    last_end = c_start + c_dur
                     clean_cards.append({
                         "start": c_start,
+                        "duration": c_dur,
                         "type": c.get("type", "card"),
                         "badge": c.get("badge", "IDEA CLAVE"),
                         "title": c.get("title", ""),
