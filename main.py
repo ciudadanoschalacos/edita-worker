@@ -388,7 +388,7 @@ def process_video_job(codigo: str):
                         words = adjusted_words
                     print(f"[{codigo}] 6.5 Silencios recortados ({len(speech_segments)} tramos sincronizados)", flush=True)
             
-         # 4. Guion de B-Roll + Escenas Motion Graphics con GPT-4o-mini (100% sincronizado y literal)
+        # 4. Guion de B-Roll + Escenas Motion Graphics con GPT-4o-mini (100% sincronizado y literal)
             broll_plan = []
             cards_plan = []
             if len(words) > 4:
@@ -399,7 +399,7 @@ def process_video_job(codigo: str):
                     f"Eres un director de motion graphics en español. A continuación tienes la transcripción con el segundo exacto "
                     f"en que se pronuncia cada palabra:\n{timed_transcript}\n\n"
                     f"Devuelve un JSON con exactamente dos listas:\n"
-                    f"1. 'clips': máximo 2 momentos clave para mostrar un video de apoyo (B-roll) en ventana flotante. "
+                    f"1. 'clips': máximo 3 momentos clave para mostrar un video de apoyo (B-roll). "
                     f"Cada objeto: {{'start': float (segundo exacto donde empieza esa idea), 'query': '2 palabras en inglés para Pixabay'}}.\n"
                     f"2. 'cards': máximo 3 escenas gráficas en ESPAÑOL puro (nunca uses inglés), separadas por al menos 4.5 segundos entre sí. "
                     f"REGLAS ESTRICTAS:\n"
@@ -417,9 +417,90 @@ def process_video_job(codigo: str):
                     messages=[{"role": "user", "content": prompt_llm}],
                 )
                 parsed = json.loads(chat.choices[0].message.content)
-                broll_plan = parsed.get("clips", [])[:2]
+                broll_plan = parsed.get("clips", [])[:3]
                 cards_plan = parsed.get("cards", [])[:3]
-            print(f"[{codigo}] 7. Plan B-Roll ({len(broll_plan)}) y Escenas ({len(cards_plan)}) listos", flush=True)
+            print(f"[{codigo}] 7. Plan B-Roll ({len(broll_plan)}) y Escenas ({len(cards_plan)}) listos (estilo={estilo})", flush=True)
+
+            # Si el cliente eligió Remotion Pro, delegar renderizado a GitHub Actions
+            if "remotion" in (estilo or "").lower():
+                print(f"[{codigo}] Derivando a Remotion (GitHub Actions)...", flush=True)
+                base_storage_path = f"{codigo}/base_cut.mp4"
+                with open(cut_path, "rb") as bf:
+                    supabase.storage.from_("videos-editados").upload(
+                        base_storage_path,
+                        bf.read(),
+                        {"content-type": "video/mp4", "upsert": "true"},
+                    )
+                base_public_url = supabase.storage.from_("videos-editados").get_public_url(base_storage_path)
+
+                max_sec = max((w["end"] for w in words), default=15.0)
+
+                # Ordenar tarjetas sin solapamientos
+                clean_cards = []
+                last_end = 0.0
+                for c in sorted(cards_plan, key=lambda x: float(x.get("start", 1.0))):
+                    c_start = max(float(c.get("start", 1.0)), last_end + 0.6)
+                    if c_start >= max_sec - 1.0:
+                        break
+                    last_end = c_start + 3.0
+                    clean_cards.append({
+                        "start": c_start,
+                        "type": c.get("type", "card"),
+                        "badge": c.get("badge", "IDEA CLAVE"),
+                        "title": c.get("title", ""),
+                        "subtitle": c.get("subtitle", ""),
+                        "statValue": c.get("statValue", ""),
+                        "items": c.get("items", []),
+                    })
+
+                # Colocar hasta 2 B-rolls en ventana flotante solo donde no haya tarjetas ni Hook inicial
+                brolls_for_remotion = []
+                for item in broll_plan[:2]:
+                    b_start = float(item.get("start", 0))
+                    if b_start < 2.5 or b_start >= max_sec - 2.6:
+                        continue
+                    overlaps = any(abs(b_start - cc["start"]) < 3.2 for cc in clean_cards)
+                    if overlaps:
+                        continue
+                    r_pix = requests.get(
+                        "https://pixabay.com/api/videos/",
+                        params={"key": PIXABAY_API_KEY, "q": item.get("query", "business"), "per_page": 3},
+                        timeout=15,
+                    )
+                    hits = r_pix.json().get("hits", []) if r_pix.status_code == 200 else []
+                    if hits:
+                        v_url = (hits[0].get("videos", {}).get("small") or {}).get("url")
+                        if v_url:
+                            brolls_for_remotion.append({"start": b_start, "url": v_url})
+
+                props_payload = {
+                    "videoUrl": base_public_url,
+                    "formato": formato,
+                    "durationInFrames": int(round((max_sec + 0.5) * 30)),
+                    "words": words,
+                    "cards": clean_cards,
+                    "brolls": brolls_for_remotion,
+                }
+
+                gh_repo = os.environ.get("GITHUB_REPO", "")
+                gh_token = os.environ.get("GITHUB_TOKEN", "")
+                gh_res = requests.post(
+                    f"https://api.github.com/repos/{gh_repo}/dispatches",
+                    headers={
+                        "Authorization": f"Bearer {gh_token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                    json={
+                        "event_type": "render-remotion",
+                        "client_payload": {
+                            "codigo": codigo,
+                            "props_json": json.dumps(props_payload),
+                        },
+                    },
+                    timeout=15,
+                )
+                print(f"[{codigo}] GitHub Actions disparado: status={gh_res.status_code}", flush=True)
+                return
 
             # 5. Superponer clips B-Roll de Pixabay (planes estándar)
             current_video = cut_path
