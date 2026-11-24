@@ -41,27 +41,69 @@ export interface ProVideoProps {
 export const ProVideo: React.FC<ProVideoProps> = ({
   videoUrl,
   formato,
+  durationInFrames,
   words,
   cards,
   brolls,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const currentTime = frame / fps;
+
+  // Compensación de 0.16s para clavar gráficos y subtítulos con el movimiento de labios
+  const currentTime = Math.max(0, frame / fps - 0.16);
+  const totalDuration = Math.max(1, durationInFrames / fps);
   const isVertical = formato === '9:16';
 
-  // Zoom suave cinematográfico
-  const zoom = 1 + 0.035 * Math.sin((currentTime * Math.PI) / 6);
+  // 1. Barra de progreso global (0% a 100%)
+  const globalProgress = interpolate(frame, [0, durationInFrames], [0, 100], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
 
-  // B-Roll activo (se mostrará en ventana flotante arriba, sin tapar al hablante)
+  // 2. Hook de Apertura (primeros 2.5 segundos)
+  const hookText =
+    cards[0]?.title ||
+    words
+      .slice(0, 4)
+      .map((w) => w.word.trim())
+      .join(' ');
+  const showHook = Boolean(hookText) && currentTime <= 2.5;
+  const hookSpring = spring({ frame, fps, config: { damping: 14, stiffness: 150 } });
+  const hookFade = interpolate(currentTime, [2.0, 2.5], [1, 0], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+
+  // B-Roll activo en ventana flotante
   const activeBroll = brolls.find(
     (b) => currentTime >= b.start && currentTime <= b.start + 2.6
   );
 
-  // Escena Motion Graphic activa
+  // Escena Motion Graphic activa (evita superponerse con el Hook inicial)
   const activeCard = cards.find(
-    (c) => currentTime >= c.start && currentTime <= c.start + 3.2
+    (c) =>
+      currentTime >= Math.max(c.start, 2.6) &&
+      currentTime <= Math.max(c.start, 2.6) + 3.2
   );
+
+  // Micro-golpe de cámara ("Punch Zoom") cuando entra una tarjeta o B-roll
+  const eventStart = activeCard
+    ? Math.max(activeCard.start, 2.6)
+    : activeBroll
+    ? activeBroll.start
+    : -1;
+  const punchFrame =
+    eventStart >= 0 ? Math.max(0, Math.round((currentTime - eventStart) * fps)) : -1;
+  const punchBoost =
+    punchFrame >= 0 && punchFrame < 14
+      ? interpolate(punchFrame, [0, 4, 14], [0, 0.032, 0], {
+          extrapolateLeft: 'clamp',
+          extrapolateRight: 'clamp',
+        })
+      : 0;
+
+  // Zoom base suave + golpe dinámico
+  const baseZoom = 1 + 0.03 * Math.sin((currentTime * Math.PI) / 6) + punchBoost;
 
   // Bloque de 3 palabras para subtítulos tipo estudio
   const activeIdx = words.findIndex(
@@ -71,11 +113,22 @@ export const ProVideo: React.FC<ProVideoProps> = ({
   const currentChunk =
     chunkIndex >= 0 ? words.slice(chunkIndex * 3, chunkIndex * 3 + 3) : [];
 
+  // Detector de palabras de alto impacto (números, signos o palabras clave largas)
+  const isPowerWord = (raw: string) => {
+    const clean = raw.replace(/[.,!?¡¿"']/g, '').trim();
+    return /\d|%|\+|\$/.test(clean) || clean.length >= 8;
+  };
+
   return (
-    <AbsoluteFill style={{ backgroundColor: '#09090b', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+    <AbsoluteFill
+      style={{
+        backgroundColor: '#09090b',
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+      }}
+    >
       {/* Video Principal (A-Roll) */}
       {videoUrl && (
-        <AbsoluteFill style={{ transform: `scale(${zoom})` }}>
+        <AbsoluteFill style={{ transform: `scale(${baseZoom})` }}>
           <OffthreadVideo
             src={videoUrl}
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -83,19 +136,92 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         </AbsoluteFill>
       )}
 
-      {/* Viñeta sutil superior e inferior para legibilidad cinematográfica */}
+      {/* Viñeta cinematográfica superior e inferior */}
       <AbsoluteFill
         style={{
           background:
-            'linear-gradient(180deg, rgba(9,9,11,0.55) 0%, rgba(9,9,11,0) 26%, rgba(9,9,11,0) 68%, rgba(9,9,11,0.72) 100%)',
+            'linear-gradient(180deg, rgba(9,9,11,0.62) 0%, rgba(9,9,11,0) 27%, rgba(9,9,11,0) 66%, rgba(9,9,11,0.78) 100%)',
           pointerEvents: 'none',
         }}
       />
 
+      {/* Barra de Progreso Continua en el borde superior */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: isVertical ? 8 : 6,
+          backgroundColor: 'rgba(255, 255, 255, 0.15)',
+          zIndex: 50,
+        }}
+      >
+        <div
+          style={{
+            height: '100%',
+            width: `${globalProgress}%`,
+            background: 'linear-gradient(90deg, #38bdf8 0%, #facc15 100%)',
+            boxShadow: '0 0 14px rgba(56, 189, 248, 0.85)',
+          }}
+        />
+      </div>
+
+      {/* HOOK DE APERTURA (Primeros 2.5s) */}
+      {showHook && (
+        <div
+          style={{
+            position: 'absolute',
+            top: isVertical ? 85 : 42,
+            left: '50%',
+            transform: `translate(-50%, ${(1 - hookSpring) * -32}px) scale(${
+              0.9 + 0.1 * hookSpring
+            })`,
+            opacity: hookSpring * hookFade,
+            width: isVertical ? '86%' : '62%',
+            background:
+              'linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(9, 9, 11, 0.92) 100%)',
+            backdropFilter: 'blur(14px)',
+            border: '2px solid rgba(250, 204, 21, 0.75)',
+            borderRadius: 24,
+            padding: isVertical ? '16px 28px' : '12px 24px',
+            boxShadow: '0 22px 50px rgba(0, 0, 0, 0.7)',
+            textAlign: 'center',
+          }}
+        >
+          <div
+            style={{
+              display: 'inline-block',
+              background: 'rgba(250, 204, 21, 0.16)',
+              color: '#facc15',
+              fontSize: isVertical ? 16 : 14,
+              fontWeight: 900,
+              padding: '3px 12px',
+              borderRadius: 999,
+              letterSpacing: 1.4,
+              marginBottom: 6,
+            }}
+          >
+            ● EN ESTE VIDEO
+          </div>
+          <div
+            style={{
+              color: '#ffffff',
+              fontWeight: 900,
+              fontSize: isVertical ? 40 : 30,
+              lineHeight: 1.12,
+              letterSpacing: -0.5,
+            }}
+          >
+            {hookText}
+          </div>
+        </div>
+      )}
+
       {/* B-Roll en Ventana Flotante (Picture-in-Picture estilo estudio) */}
-      {activeBroll && !activeCard && (() => {
+      {activeBroll && !activeCard && !showHook && (() => {
         const localFrame = Math.max(0, Math.round((currentTime - activeBroll.start) * fps));
-        const pop = spring({ frame: localFrame, fps, config: { damping: 14, stiffness: 150 } });
+        const pop = spring({ frame: localFrame, fps, config: { damping: 14, stiffness: 155 } });
         const fadeOut = interpolate(
           currentTime - activeBroll.start,
           [2.2, 2.6],
@@ -107,7 +233,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
           <div
             style={{
               position: 'absolute',
-              top: isVertical ? 95 : 45,
+              top: isVertical ? 90 : 42,
               left: '50%',
               transform: `translate(-50%, ${(1 - pop) * -30}px) scale(${0.88 + 0.12 * pop})`,
               opacity: pop * fadeOut,
@@ -130,7 +256,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
                 position: 'absolute',
                 top: 12,
                 left: 14,
-                background: 'rgba(15, 23, 42, 0.8)',
+                background: 'rgba(15, 23, 42, 0.82)',
                 color: '#38bdf8',
                 fontSize: 16,
                 fontWeight: 800,
@@ -145,16 +271,15 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         );
       })()}
 
-      {/* Escenas Motion Graphics (Bien arriba para no tapar el rostro) */}
+      {/* Escenas Motion Graphics (Zona segura superior sin tapar el rostro) */}
       {activeCard && (() => {
-        const localFrame = Math.max(0, Math.round((currentTime - activeCard.start) * fps));
+        const cardStart = Math.max(activeCard.start, 2.6);
+        const localFrame = Math.max(0, Math.round((currentTime - cardStart) * fps));
         const enter = spring({ frame: localFrame, fps, config: { damping: 13, stiffness: 145 } });
-        const exit = interpolate(
-          currentTime - activeCard.start,
-          [2.8, 3.2],
-          [1, 0],
-          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }
-        );
+        const exit = interpolate(currentTime - cardStart, [2.8, 3.2], [1, 0], {
+          extrapolateLeft: 'clamp',
+          extrapolateRight: 'clamp',
+        });
         const cardType = activeCard.type || 'card';
 
         // MODO 1: DATO NUMÉRICO GIGANTE (STAT)
@@ -163,16 +288,20 @@ export const ProVideo: React.FC<ProVideoProps> = ({
             <div
               style={{
                 position: 'absolute',
-                top: isVertical ? 85 : 40,
+                top: isVertical ? 82 : 38,
                 left: '50%',
-                transform: `translate(-50%, ${(1 - enter) * -35}px) scale(${0.85 + 0.15 * enter})`,
+                transform: `translate(-50%, ${(1 - enter) * -35}px) scale(${
+                  0.85 + 0.15 * enter
+                })`,
                 opacity: enter * exit,
-                background: 'linear-gradient(135deg, rgba(15,23,42,0.92) 0%, rgba(30,41,59,0.92) 100%)',
+                background:
+                  'linear-gradient(135deg, rgba(15,23,42,0.93) 0%, rgba(30,41,59,0.93) 100%)',
                 backdropFilter: 'blur(14px)',
-                border: '2px solid rgba(250, 204, 21, 0.8)',
+                border: '2px solid rgba(250, 204, 21, 0.85)',
                 borderRadius: 28,
-                padding: isVertical ? '20px 44px' : '14px 32px',
-                boxShadow: '0 20px 50px rgba(0,0,0,0.65), 0 0 35px rgba(250,204,21,0.25)',
+                padding: isVertical ? '18px 44px' : '14px 32px',
+                boxShadow:
+                  '0 20px 50px rgba(0,0,0,0.68), 0 0 35px rgba(250,204,21,0.28)',
                 textAlign: 'center',
                 minWidth: isVertical ? 460 : 360,
               }}
@@ -184,7 +313,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
                   fontSize: isVertical ? 76 : 56,
                   lineHeight: 1,
                   letterSpacing: -1,
-                  textShadow: '0 4px 20px rgba(250,204,21,0.4)',
+                  textShadow: '0 4px 20px rgba(250,204,21,0.45)',
                 }}
               >
                 {activeCard.statValue}
@@ -193,7 +322,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
                 style={{
                   color: '#ffffff',
                   fontWeight: 800,
-                  fontSize: isVertical ? 30 : 24,
+                  fontSize: isVertical ? 28 : 22,
                   marginTop: 6,
                   textTransform: 'uppercase',
                   letterSpacing: 1,
@@ -211,24 +340,24 @@ export const ProVideo: React.FC<ProVideoProps> = ({
             <div
               style={{
                 position: 'absolute',
-                top: isVertical ? 80 : 38,
+                top: isVertical ? 78 : 36,
                 left: '50%',
                 transform: `translate(-50%, ${(1 - enter) * -35}px)`,
                 opacity: enter * exit,
-                background: 'rgba(15, 23, 42, 0.92)',
+                background: 'rgba(15, 23, 42, 0.93)',
                 backdropFilter: 'blur(14px)',
-                border: '2px solid rgba(56, 189, 248, 0.75)',
+                border: '2px solid rgba(56, 189, 248, 0.8)',
                 borderRadius: 26,
-                padding: isVertical ? '20px 32px' : '14px 24px',
-                boxShadow: '0 20px 50px rgba(0,0,0,0.65)',
-                width: isVertical ? '82%' : '52%',
+                padding: isVertical ? '18px 30px' : '14px 24px',
+                boxShadow: '0 20px 50px rgba(0,0,0,0.68)',
+                width: isVertical ? '84%' : '54%',
               }}
             >
               <div
                 style={{
                   color: '#38bdf8',
                   fontWeight: 900,
-                  fontSize: isVertical ? 24 : 20,
+                  fontSize: isVertical ? 23 : 19,
                   textTransform: 'uppercase',
                   letterSpacing: 1.2,
                   marginBottom: 10,
@@ -275,7 +404,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
                         style={{
                           color: '#f8fafc',
                           fontWeight: 700,
-                          fontSize: isVertical ? 28 : 22,
+                          fontSize: isVertical ? 27 : 21,
                         }}
                       >
                         {it}
@@ -289,28 +418,29 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         }
 
         // MODO 3: TARJETA CRISTAL CON BARRA DE PROGRESO (CARD)
-        const progressPct = interpolate(
-          currentTime - activeCard.start,
-          [0, 3.0],
-          [0, 100],
-          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }
-        );
+        const progressPct = interpolate(currentTime - cardStart, [0, 3.0], [0, 100], {
+          extrapolateLeft: 'clamp',
+          extrapolateRight: 'clamp',
+        });
 
         return (
           <div
             style={{
               position: 'absolute',
-              top: isVertical ? 85 : 40,
+              top: isVertical ? 82 : 38,
               left: '50%',
-              transform: `translate(-50%, ${(1 - enter) * -35}px) scale(${0.92 + 0.08 * enter})`,
+              transform: `translate(-50%, ${(1 - enter) * -35}px) scale(${
+                0.92 + 0.08 * enter
+              })`,
               opacity: enter * exit,
-              background: 'linear-gradient(145deg, rgba(15,23,42,0.92), rgba(24,24,27,0.92))',
+              background:
+                'linear-gradient(145deg, rgba(15,23,42,0.93), rgba(24,24,27,0.93))',
               backdropFilter: 'blur(14px)',
-              border: '2px solid rgba(56, 189, 248, 0.75)',
+              border: '2px solid rgba(56, 189, 248, 0.8)',
               borderRadius: 24,
-              padding: isVertical ? '18px 32px' : '14px 26px',
-              boxShadow: '0 20px 50px rgba(0,0,0,0.6)',
-              maxWidth: isVertical ? '84%' : '55%',
+              padding: isVertical ? '16px 30px' : '12px 24px',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.65)',
+              maxWidth: isVertical ? '84%' : '56%',
               overflow: 'hidden',
             }}
           >
@@ -320,7 +450,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
                   background: '#38bdf8',
                   color: '#09090b',
                   fontWeight: 900,
-                  fontSize: isVertical ? 18 : 15,
+                  fontSize: isVertical ? 17 : 14,
                   padding: '3px 12px',
                   borderRadius: 999,
                   textTransform: 'uppercase',
@@ -334,7 +464,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
               style={{
                 color: '#ffffff',
                 fontWeight: 900,
-                fontSize: isVertical ? 40 : 30,
+                fontSize: isVertical ? 38 : 28,
                 lineHeight: 1.15,
               }}
             >
@@ -345,14 +475,13 @@ export const ProVideo: React.FC<ProVideoProps> = ({
                 style={{
                   color: '#cbd5e1',
                   fontWeight: 500,
-                  fontSize: isVertical ? 26 : 20,
+                  fontSize: isVertical ? 25 : 19,
                   marginTop: 6,
                 }}
               >
                 {activeCard.subtitle}
               </div>
             )}
-            {/* Barra de progreso animada en la base */}
             <div
               style={{
                 position: 'absolute',
@@ -367,12 +496,12 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         );
       })()}
 
-      {/* Subtítulos Estilo Estudio con Píldora Activa */}
+      {/* Subtítulos Dinámicos con Énfasis Dorado en Palabras Clave */}
       {currentChunk.length > 0 && (
         <div
           style={{
             position: 'absolute',
-            bottom: isVertical ? 230 : 75,
+            bottom: isVertical ? 220 : 70,
             left: 36,
             right: 36,
             display: 'flex',
@@ -384,21 +513,42 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         >
           {currentChunk.map((w, i) => {
             const isActive = currentTime >= w.start && currentTime <= w.end + 0.14;
+            const power = isPowerWord(w.word);
+
+            const bg = isActive
+              ? power
+                ? '#facc15'
+                : '#38bdf8'
+              : 'rgba(9, 9, 11, 0.72)';
+
+            const textColor = isActive
+              ? '#09090b'
+              : power
+              ? '#facc15'
+              : '#ffffff';
+
+            const scale = isActive ? (power ? 1.16 : 1.08) : power ? 1.04 : 1;
+            const rotate = isActive && power ? '-2deg' : '0deg';
+
             return (
               <span
                 key={i}
                 style={{
-                  background: isActive ? '#38bdf8' : 'rgba(9, 9, 11, 0.65)',
-                  color: isActive ? '#09090b' : '#ffffff',
+                  background: bg,
+                  color: textColor,
                   fontWeight: 900,
                   fontSize: isVertical ? 54 : 42,
                   padding: '4px 16px',
                   borderRadius: 16,
                   textTransform: 'uppercase',
                   boxShadow: isActive
-                    ? '0 8px 25px rgba(56, 189, 248, 0.5)'
-                    : '0 4px 12px rgba(0, 0, 0, 0.6)',
-                  transform: isActive ? 'scale(1.08) translateY(-3px)' : 'scale(1)',
+                    ? power
+                      ? '0 8px 28px rgba(250, 204, 21, 0.55)'
+                      : '0 8px 25px rgba(56, 189, 248, 0.5)'
+                    : '0 4px 12px rgba(0, 0, 0, 0.65)',
+                  transform: `scale(${scale}) rotate(${rotate}) translateY(${
+                    isActive ? '-3px' : '0px'
+                  })`,
                 }}
               >
                 {w.word.trim()}
