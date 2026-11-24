@@ -16,6 +16,7 @@ export interface WordItem {
 
 export interface CardItem {
   start: number;
+  duration?: number;
   type?: 'stat' | 'list' | 'card';
   badge?: string;
   title: string;
@@ -76,13 +77,11 @@ export const ProVideo: React.FC<ProVideoProps> = ({
     (b) => currentTime >= b.start && currentTime <= b.start + 2.6
   );
 
-  // Escena Motion Graphic activa en su segundo exacto
-  const activeCard = cards.find(
-    (c) =>
-      c.start >= 2.2 &&
-      currentTime >= c.start &&
-      currentTime <= c.start + 3.0
-  );
+  // Escena Motion Graphic activa respetando su duración dinámica
+  const activeCard = cards.find((c) => {
+    const dur = c.duration || 4.2;
+    return c.start >= 2.2 && currentTime >= c.start && currentTime <= c.start + dur;
+  });
 
   // Micro-golpe de cámara ("Punch Zoom") cuando entra una tarjeta o B-roll
   const eventStart = activeCard
@@ -269,12 +268,13 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         );
       })()}
 
-      {/* Escenas Motion Graphics (Sincronizadas con el segundo exacto del habla) */}
+      {/* Escenas Motion Graphics (Sincronizadas con duración dinámica del habla) */}
       {activeCard && (() => {
         const cardStart = activeCard.start;
+        const cardDur = activeCard.duration || 4.2;
         const localFrame = Math.max(0, Math.round((currentTime - cardStart) * fps));
         const enter = spring({ frame: localFrame, fps, config: { damping: 13, stiffness: 145 } });
-        const exit = interpolate(currentTime - cardStart, [2.6, 3.0], [1, 0], {
+        const exit = interpolate(currentTime - cardStart, [cardDur - 0.4, cardDur], [1, 0], {
           extrapolateLeft: 'clamp',
           extrapolateRight: 'clamp',
         });
@@ -416,10 +416,15 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         }
 
         // MODO 3: TARJETA CRISTAL CON BARRA DE PROGRESO (CARD)
-        const progressPct = interpolate(currentTime - cardStart, [0, 2.8], [0, 100], {
-          extrapolateLeft: 'clamp',
-          extrapolateRight: 'clamp',
-        });
+        const progressPct = interpolate(
+          currentTime - cardStart,
+          [0, Math.max(0.5, cardDur - 0.2)],
+          [0, 100],
+          {
+            extrapolateLeft: 'clamp',
+            extrapolateRight: 'clamp',
+          }
+        );
 
         return (
           <div
