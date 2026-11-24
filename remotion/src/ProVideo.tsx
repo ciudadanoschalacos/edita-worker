@@ -51,7 +51,6 @@ export const ProVideo: React.FC<ProVideoProps> = ({
 
   // Compensación de 0.16s para clavar gráficos y subtítulos con el movimiento de labios
   const currentTime = Math.max(0, frame / fps - 0.16);
-  const totalDuration = Math.max(1, durationInFrames / fps);
   const isVertical = formato === '9:16';
 
   // 1. Barra de progreso global (0% a 100%)
@@ -60,16 +59,14 @@ export const ProVideo: React.FC<ProVideoProps> = ({
     extrapolateRight: 'clamp',
   });
 
-  // 2. Hook de Apertura (primeros 2.5 segundos)
-  const hookText =
-    cards[0]?.title ||
-    words
-      .slice(0, 4)
-      .map((w) => w.word.trim())
-      .join(' ');
-  const showHook = Boolean(hookText) && currentTime <= 2.5;
+  // 2. Hook de Apertura usando solo las palabras iniciales (sin adelantar tarjetas futuras)
+  const hookText = words
+    .slice(0, 4)
+    .map((w) => w.word.trim())
+    .join(' ');
+  const showHook = Boolean(hookText) && currentTime <= 2.2;
   const hookSpring = spring({ frame, fps, config: { damping: 14, stiffness: 150 } });
-  const hookFade = interpolate(currentTime, [2.0, 2.5], [1, 0], {
+  const hookFade = interpolate(currentTime, [1.8, 2.2], [1, 0], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
@@ -79,16 +76,17 @@ export const ProVideo: React.FC<ProVideoProps> = ({
     (b) => currentTime >= b.start && currentTime <= b.start + 2.6
   );
 
-  // Escena Motion Graphic activa (evita superponerse con el Hook inicial)
+  // Escena Motion Graphic activa en su segundo exacto
   const activeCard = cards.find(
     (c) =>
-      currentTime >= Math.max(c.start, 2.6) &&
-      currentTime <= Math.max(c.start, 2.6) + 3.2
+      c.start >= 2.2 &&
+      currentTime >= c.start &&
+      currentTime <= c.start + 3.0
   );
 
   // Micro-golpe de cámara ("Punch Zoom") cuando entra una tarjeta o B-roll
   const eventStart = activeCard
-    ? Math.max(activeCard.start, 2.6)
+    ? activeCard.start
     : activeBroll
     ? activeBroll.start
     : -1;
@@ -167,7 +165,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         />
       </div>
 
-      {/* HOOK DE APERTURA (Primeros 2.5s) */}
+      {/* HOOK DE APERTURA (Primeros 2.2s con las palabras de arranque) */}
       {showHook && (
         <div
           style={{
@@ -271,12 +269,12 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         );
       })()}
 
-      {/* Escenas Motion Graphics (Zona segura superior sin tapar el rostro) */}
+      {/* Escenas Motion Graphics (Sincronizadas con el segundo exacto del habla) */}
       {activeCard && (() => {
-        const cardStart = Math.max(activeCard.start, 2.6);
+        const cardStart = activeCard.start;
         const localFrame = Math.max(0, Math.round((currentTime - cardStart) * fps));
         const enter = spring({ frame: localFrame, fps, config: { damping: 13, stiffness: 145 } });
-        const exit = interpolate(currentTime - cardStart, [2.8, 3.2], [1, 0], {
+        const exit = interpolate(currentTime - cardStart, [2.6, 3.0], [1, 0], {
           extrapolateLeft: 'clamp',
           extrapolateRight: 'clamp',
         });
@@ -418,7 +416,7 @@ export const ProVideo: React.FC<ProVideoProps> = ({
         }
 
         // MODO 3: TARJETA CRISTAL CON BARRA DE PROGRESO (CARD)
-        const progressPct = interpolate(currentTime - cardStart, [0, 3.0], [0, 100], {
+        const progressPct = interpolate(currentTime - cardStart, [0, 2.8], [0, 100], {
           extrapolateLeft: 'clamp',
           extrapolateRight: 'clamp',
         });
