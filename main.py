@@ -295,31 +295,22 @@ def process_video_job(codigo: str):
                 f.write(file_bytes)
             print(f"[{codigo}] 4. Video descargado ({len(file_bytes)} bytes)", flush=True)
 
-            # 2. Reencuadre + corte de silencios
+           # 2. Reencuadre y normalización CFR (mantiene audio y video 100% sincronizados)
             vf_main = (
                 f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},fps=30,format=yuv420p"
                 if estilo == "remotion"
                 else build_video_filter(estilo, target_w, target_h)
             )
-            try:
-                run_cmd([
-                    "ffmpeg", "-y", "-threads", "2", "-i", raw_path,
-                    "-vf", vf_main,
-                    "-af", "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-40dB:stop_periods=-1:stop_duration=0.5:stop_threshold=-40dB",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
-                    "-c:a", "aac", "-b:a", "128k",
-                    cut_path
-                ])
-            except Exception:
-                print(f"[{codigo}] Fallback sin silenceremove...", flush=True)
-                run_cmd([
-                    "ffmpeg", "-y", "-threads", "2", "-i", raw_path,
-                    "-vf", vf_main,
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
-                    "-c:a", "aac", "-b:a", "128k",
-                    cut_path
-                ])
-            print(f"[{codigo}] 5. Corte listo", flush=True)
+            run_cmd([
+                "ffmpeg", "-y", "-threads", "2", "-i", raw_path,
+                "-vf", vf_main,
+                "-af", "aresample=async=1:first_pts=0",
+                "-vsync", "cfr", "-r", "30",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
+                "-c:a", "aac", "-b:a", "128k",
+                cut_path
+            ])
+            print(f"[{codigo}] 5. Video base sincronizado listo", flush=True)
 
             # 3. Transcripción palabra por palabra con Groq Whisper
             run_cmd(["ffmpeg", "-y", "-threads", "2", "-i", cut_path, "-vn", "-acodec", "libmp3lame", "-q:a", "4", audio_path])
